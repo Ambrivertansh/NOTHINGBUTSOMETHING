@@ -33,11 +33,17 @@ def db_query(query, args=(), fetchone=False, fetchall=False, commit=False):
 def init_db():
     db_query('''CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)''', commit=True)
     db_query('''CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT)''', commit=True)
-    db_query('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)''', commit=True) 
+    db_query('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT)''', commit=True) 
     db_query('''CREATE TABLE IF NOT EXISTS all_users (user_id INTEGER PRIMARY KEY)''', commit=True)
     db_query('''CREATE TABLE IF NOT EXISTS codes (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, winner_id INTEGER)''', commit=True)
-    db_query('''CREATE TABLE IF NOT EXISTS ui_mode (user_id INTEGER PRIMARY KEY, mode TEXT)''', commit=True) # New table for UI Toggle
+    db_query('''CREATE TABLE IF NOT EXISTS ui_mode (user_id INTEGER PRIMARY KEY, mode TEXT)''', commit=True)
     db_query("INSERT OR IGNORE INTO state (key, value) VALUES ('active', '0')", commit=True)
+    
+    # DB MIGRATION: Safely upgrades the database to support usernames if it's an older version
+    try:
+        db_query("ALTER TABLE users ADD COLUMN username TEXT", commit=True)
+    except:
+        pass # Column already exists, safe to ignore
 
 # Checks if they are legally an admin
 def is_actual_admin(user_id):
@@ -72,7 +78,6 @@ async def remove_admin(message: types.Message):
     try:
         target_id = int(message.text.split()[1])
         db_query("DELETE FROM admins WHERE user_id = ?", (target_id,), commit=True)
-        # Also reset their UI mode if they get fired
         db_query("DELETE FROM ui_mode WHERE user_id = ?", (target_id,), commit=True) 
         await message.reply(f"🚫 Success! User ID `{target_id}` has been removed from admins.", parse_mode="Markdown")
     except:
@@ -89,13 +94,11 @@ async def toggle_ui(message: types.Message):
     current_mode = db_query("SELECT mode FROM ui_mode WHERE user_id = ?", (user_id,), fetchone=True)
     
     if current_mode and current_mode[0] == 'user':
-        # Switch back to Admin UI
         db_query("UPDATE ui_mode SET mode = 'admin' WHERE user_id = ?", (user_id,), commit=True)
         await message.reply("🔓 **ADMIN UI RESTORED**\nYou can now use /setup, /code, /broadcast, etc.", parse_mode="Markdown")
     else:
-        # Switch to User UI
         db_query("INSERT OR REPLACE INTO ui_mode (user_id, mode) VALUES (?, 'user')", (user_id,), commit=True)
-        await message.reply("🎭 **USER UI ACTIVATED**\nAdmin commands are now hidden from you. Type `/toggleui` to switch back.", parse_mode="Markdown")
+        await message.reply("🎭 **USER UI ACTIVATED**\nAdmin commands are now hidden. You will now see broadcasts like a normal user. Type `/toggleui` to switch back.", parse_mode="Markdown")
 
 # --- 5. STANDARD ADMIN COMMANDS ---
 
@@ -144,6 +147,8 @@ async def process_codes(message: types.Message):
         users = db_query("SELECT user_id FROM all_users", fetchall=True)
         success = 0
         for u in users:
+            if is_effective_admin(u[0]):
+                continue
             try:
                 await bot.send_message(u[0], text, reply_markup=keyboard)
                 success += 1
@@ -151,7 +156,7 @@ async def process_codes(message: types.Message):
             except Exception:
                 pass 
                 
-        await message.reply(f"🚀 **Giveaway Live!** Successfully pushed to {success} users.")
+        await message.reply(f"🚀 **Giveaway Live!** Successfully pushed to {success} regular users.")
     else:
         await message.reply("⚠️ No active giveaway is waiting for codes. Use /setup first.")
 
@@ -165,15 +170,19 @@ async def broadcast_cmd(message: types.Message):
         
     users = db_query("SELECT user_id FROM all_users", fetchall=True)
     success = 0
-    await message.reply(f"⏳ Broadcasting to {len(users)} users...")
+    await message.reply(f"⏳ Broadcasting to users...")
+    
     for u in users:
+        if is_effective_admin(u[0]):
+            continue
         try:
             await bot.send_message(u[0], text_to_send)
             success += 1
             await asyncio.sleep(0.05)
         except Exception:
             pass 
-    await message.reply(f"✅ **Broadcast Complete!**\nMessage successfully sent to {success} users.", parse_mode="Markdown")
+            
+    await message.reply(f"✅ **Broadcast Complete!**\nMessage successfully sent to {success} regular users.", parse_mode="Markdown")
 
 @dp.message(Command("done"))
 async def done_cmd(message: types.Message):
@@ -212,27 +221,99 @@ async def done_cmd(message: types.Message):
     await message.reply("⏳ Broadcasting end message to users...")
     success = 0
     for p in participants:
+        if is_effective_admin(p):
+            continue
         try:
             await bot.send_message(p, end_text, reply_markup=keyboard)
             success += 1
             await asyncio.sleep(0.05)
         except Exception:
             pass
-    await message.reply(f"✅ Broadcast complete. Sent to {success} users.")
+            
+    await message.reply(f"✅ Broadcast complete. Sent to {success} regular users.")
 
-# --- 6. PUBLIC USER COMMANDS ---
+# --- 6. PAGINATED STATS COMMAND ---
+
+@dp.message(Command("stats"))
+async def stats_cmd(message: types.Message):
+    is_active = db_query("SELECT value FROM state WHERE key = 'active'", fetchone=True)
+    
+    if is_active and is_active[0] == "1":
+        # ADMIN VIEW
+        if is_effective_admin(message.from_user.id):
+            users = db_query("SELECT user_id, username FROM users", fetchall=True)
+            
+            if not users:
+                await message.reply("📊 **Admin Live Stats**\n\n🔥 Total Registered: **0**\n\n📋 **Participant IDs:**\nNo users registered yet.")
+                return
+            
+            # Setup Pagination (Page 0)
+            items_per_page = 10
+            total_pages = (len(users) - 1) // items_per_page + 1
+            page_users = users[0:items_per_page]
+            
+            user_list = "\n".join([f"👤 `{u[0]}` - @{u[1]}" if u[1] else f"👤 `{u[0]}` - No Username" for u in page_users])
+            text = f"📊 **Admin Live Stats**\n\n🔥 Total Registered: **{len(users)}**\n\n📋 **Participants (Page 1/{total_pages}):**\n{user_list}"
+            
+            # Generate Next Button if needed
+            keyboard = None
+            if total_pages > 1:
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="Next ➡️", callback_data="stats_page_1")
+                ]])
+                
+            await message.reply(text, reply_markup=keyboard, parse_mode="Markdown")
+            
+        # REGULAR USER VIEW
+        else:
+            count = db_query("SELECT COUNT(*) FROM users", fetchone=True)[0]
+            await message.reply(f"📊 **Live Giveaway Stats**\n\n🔥 Total Users Registered: **{count}**\n\n⏳ Tap the registration button on the main message to join!")
+    else:
+        await message.reply("⚠️ There is no active giveaway right now. Stay tuned for the next drop!")
+
+# PAGINATION CALLBACK HANDLER
+@dp.callback_query(F.data.startswith("stats_page_"))
+async def stats_pagination(call: CallbackQuery):
+    if not is_effective_admin(call.from_user.id):
+        await call.answer("Access denied.", show_alert=True)
+        return
+        
+    page = int(call.data.split("_")[2])
+    users = db_query("SELECT user_id, username FROM users", fetchall=True)
+    
+    items_per_page = 10
+    total_pages = (len(users) - 1) // items_per_page + 1
+    
+    if page < 0 or page >= total_pages:
+        await call.answer("Page out of bounds.", show_alert=True)
+        return
+        
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    page_users = users[start_idx:end_idx]
+    
+    user_list = "\n".join([f"👤 `{u[0]}` - @{u[1]}" if u[1] else f"👤 `{u[0]}` - No Username" for u in page_users])
+    text = f"📊 **Admin Live Stats**\n\n🔥 Total Registered: **{len(users)}**\n\n📋 **Participants (Page {page+1}/{total_pages}):**\n{user_list}"
+    
+    buttons = []
+    if page > 0:
+        buttons.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"stats_page_{page-1}"))
+    if page < total_pages - 1:
+        buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"stats_page_{page+1}"))
+        
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
+    
+    # Edits the existing message instead of sending a new one!
+    await call.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+# --- 7. PUBLIC USER COMMANDS ---
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     user_id = message.from_user.id
     db_query("INSERT OR IGNORE INTO all_users (user_id) VALUES (?)", (user_id,), commit=True)
-    
-    won_code = db_query("SELECT code FROM codes WHERE winner_id = ?", (user_id,), fetchone=True)
-    
-    if won_code:
-        await message.reply(f"🎉 **CONGRATULATIONS!** 🎉\n\nYou won the giveaway! 🏆\nHere is your code:\n\n`{won_code[0]}`\n\nEnjoy!", parse_mode="Markdown")
-    else:
-        await message.reply("👋 **Welcome to the 𝘾𝙊𝙊𝙇𝘼𝙋𝙋𝙂𝙄𝙑𝙀𝘼𝙒𝘼𝙔 Bot!** 🚀\n\n✨ Keep an eye on this bot and the main channel for upcoming drops. When a giveaway starts, just tap the registration button to enter! 🎁")
+    await message.reply("👋 **Welcome to the 𝘾𝙊𝙊𝙇𝘼𝙋𝙋𝙂𝙄𝙑𝙀𝘼𝙒𝘼𝙔 Bot!** 🚀\n\n✨ Keep an eye on this bot and the main channel for upcoming drops. When a giveaway starts, just tap the registration button to enter! 🎁")
 
 @dp.callback_query(F.data == "register")
 async def register_callback(call: CallbackQuery):
@@ -248,11 +329,16 @@ async def register_callback(call: CallbackQuery):
         return
 
     user_id = call.from_user.id
+    username = call.from_user.username # Captures their @username if they have one!
+    
     try:
-        db_query("INSERT INTO users (user_id) VALUES (?)", (user_id,), commit=True)
-        await call.answer("✅ Successfully registered! Good luck!", show_alert=True)
+        # Now saves BOTH the ID and the Username to the database
+        db_query("INSERT INTO users (user_id, username) VALUES (?, ?)", (user_id, username), commit=True)
+        count = db_query("SELECT COUNT(*) FROM users", fetchone=True)[0]
+        await call.answer(f"✅ Successfully registered!\n\nLive Participants: {count}", show_alert=True)
     except sqlite3.IntegrityError:
-        await call.answer("⚠️ You are already registered for this drop!", show_alert=True)
+        count = db_query("SELECT COUNT(*) FROM users", fetchone=True)[0]
+        await call.answer(f"⚠️ You are already registered!\n\nLive Participants: {count}", show_alert=True)
 
 @dp.callback_query(F.data == "check_win")
 async def check_win_callback(call: CallbackQuery):
@@ -265,18 +351,20 @@ async def check_win_callback(call: CallbackQuery):
     else:
         await call.answer("😢 Better luck next time! You didn't win this round.", show_alert=True)
 
-# --- 7. KEEP-ALIVE WEB SERVER (For Render) ---
+# --- 8. KEEP-ALIVE WEB SERVER (For Render) ---
 async def keep_alive(request):
     return web.Response(text="Giveaway Bot is Alive and running 24/7!")
 
 async def main():
     init_db()
+    
     app = web.Application()
     app.router.add_get('/', keep_alive)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 8080)
     await site.start()
+    
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
