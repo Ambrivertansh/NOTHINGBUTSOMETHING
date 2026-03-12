@@ -9,7 +9,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
-from aiohttp import web  # NEW: We need this for Render's Free Tier
+from aiohttp import web
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -68,6 +68,9 @@ router = Router()
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
+    # SECURITY FIX: Ignore if someone adds bot to a group chat
+    if message.chat.type != "private": return 
+
     user_id = message.from_user.id
     
     if user_id not in data["all_users"]:
@@ -107,16 +110,18 @@ async def cmd_start(message: Message):
     
     else:
         text = (
-            "🎉 *WELCOME TO COOLAPPGIVEAWAY!* 🎁\n\n"
-            "🌟 You are now subscribed to our official drop bot!\n"
-            "🔥 Keep an eye on this chat. When a drop happens, "
-            "you'll see a button to register right here.\n\n"
-            "✨ Good luck and stay tuned!"
+            "👋 *Welcome to the 𝘾𝙊𝙊𝙇𝘼𝙋𝙋𝙂𝙄𝙑𝙀𝘼𝙒𝘼𝙔 Bot!* 🚀\n\n"
+            "✨ Keep an eye on this bot and the main channel for upcoming drops. "
+            "When a giveaway starts, just tap the registration button to enter! 🎁"
         )
-        await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔴 Join Updates Channel 🔴", url="https://t.me/CoolAppStore")]
+        ])
+        await message.answer(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
 
 @router.message(Command("toggleui"))
 async def cmd_toggleui(message: Message):
+    if message.chat.type != "private": return 
     user_id = message.from_user.id
     if not (is_master(user_id) or is_admin(user_id)): return
 
@@ -129,6 +134,7 @@ async def cmd_toggleui(message: Message):
 
 @router.message(Command("addmadmin"))
 async def cmd_addmadmin(message: Message, command: CommandObject):
+    if message.chat.type != "private": return 
     if not is_master(message.from_user.id) or get_role(message.from_user.id) == "user": return
     try:
         new_id = int(command.args)
@@ -141,6 +147,7 @@ async def cmd_addmadmin(message: Message, command: CommandObject):
 
 @router.message(Command("addadmin"))
 async def cmd_addadmin(message: Message, command: CommandObject):
+    if message.chat.type != "private": return 
     if not is_master(message.from_user.id) or get_role(message.from_user.id) == "user": return
     try:
         new_id = int(command.args)
@@ -153,6 +160,7 @@ async def cmd_addadmin(message: Message, command: CommandObject):
 
 @router.message(Command("removeadmin"))
 async def cmd_removeadmin(message: Message, command: CommandObject):
+    if message.chat.type != "private": return 
     if not is_master(message.from_user.id) or get_role(message.from_user.id) == "user": return
     try:
         target_id = int(command.args)
@@ -167,6 +175,7 @@ async def cmd_removeadmin(message: Message, command: CommandObject):
 
 @router.message(Command("setup"))
 async def cmd_setup(message: Message, command: CommandObject):
+    if message.chat.type != "private": return 
     if not is_admin(message.from_user.id) or get_role(message.from_user.id) == "user": return
     try:
         hours = float(command.args)
@@ -180,12 +189,13 @@ async def cmd_setup(message: Message, command: CommandObject):
         data["giveaway"]["winners"] = {}
         save_data()
         
-        await message.answer(f"✅ Setup complete! Giveaway active for {hours} hours.\nNext step: use /code")
+        await message.answer(f"⚙️ *Giveaway initialized for {hours} hours!*\n\nPlease use the `/code` command to add the codes now.", parse_mode=ParseMode.MARKDOWN)
     except (TypeError, ValueError):
-        await message.answer("❌ Usage: /setup 24 (or 2.5, etc.)")
+        await message.answer("⚠️ Format error. Please use: /setup <hours>")
 
 @router.message(Command("code"))
 async def cmd_code(message: Message):
+    if message.chat.type != "private": return 
     if not is_admin(message.from_user.id) or get_role(message.from_user.id) == "user": return
     
     lines = message.text.split('\n')
@@ -197,30 +207,43 @@ async def cmd_code(message: Message):
     data["giveaway"]["codes"] = codes
     save_data()
 
-    await message.answer(f"✅ {len(codes)} codes saved! Blasting to all users now...")
+    await message.answer("✅ Codes saved! Broadcasting the drop to all users now...")
 
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟢 𝗥𝗘𝗚𝗜𝗦𝗧𝗘𝗥 𝗡𝗢𝗪 🟢", callback_data="register")]
+        [InlineKeyboardButton(text="🟢 𝗥𝗘𝗚𝗜𝗦𝗧𝗘𝗥 𝗡𝗢𝗪 🟢", callback_data="register")],
+        [InlineKeyboardButton(text="🔴 Join Updates Channel 🔴", url="https://t.me/CoolAppStore")]
     ])
+    
+    broadcast_text = (
+        "🎊 *𝗠𝗔𝗦𝗦𝗜𝗩𝗘 𝗚𝗜𝗩𝗘𝗔𝗪𝗔𝗬 𝗔𝗟𝗘𝗥𝗧!* 🎊\n\n"
+        f"🎁 We are giving away *{len(codes)}* exclusive codes!\n"
+        "⏳ Don't miss out, tap the green button below to enter!\n\n"
+        "👇👇👇"
+    )
     
     success_count = 0
     for user_id in data["all_users"]:
+        # SECURITY FIX: Don't spam admins with user broadcasts
+        if get_role(user_id) in ["admin", "master"]: 
+            continue 
+            
         try:
             await bot.send_message(
                 chat_id=user_id, 
-                text="🚨 *NEW DROP IS LIVE!* 🚨\n\nTap the button below to enter! Hurry!", 
+                text=broadcast_text, 
                 reply_markup=markup,
                 parse_mode=ParseMode.MARKDOWN
             )
             success_count += 1
             await asyncio.sleep(0.05)
-        except TelegramAPIError:
+        except Exception: 
             pass 
             
-    await message.answer(f"✅ Broadcast sent to {success_count} users!")
+    await message.answer(f"🚀 *Giveaway Live!* Successfully pushed to {success_count} normal users.", parse_mode=ParseMode.MARKDOWN)
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message):
+    if message.chat.type != "private": return 
     if not data["giveaway"]["active"]:
         await message.answer("⚠️ There is no active giveaway right now. Stay tuned for the next drop!")
         return
@@ -256,6 +279,7 @@ async def cmd_stats(message: Message):
 
 @router.message(Command("done"))
 async def cmd_done(message: Message):
+    if message.chat.type != "private": return 
     if not is_admin(message.from_user.id) or get_role(message.from_user.id) == "user": return
     
     if not data["giveaway"]["active"]:
@@ -290,11 +314,12 @@ async def cmd_done(message: Message):
                 parse_mode=ParseMode.MARKDOWN
             )
             await asyncio.sleep(0.05)
-        except TelegramAPIError:
+        except Exception:
             pass
 
 @router.message(Command("broadcast"))
 async def cmd_broadcast(message: Message, command: CommandObject):
+    if message.chat.type != "private": return 
     if not is_admin(message.from_user.id) or get_role(message.from_user.id) == "user": return
     
     if not command.args:
@@ -304,13 +329,15 @@ async def cmd_broadcast(message: Message, command: CommandObject):
     success_count = 0
     await message.answer("⏳ Broadcasting...")
     for user_id in data["all_users"]:
+        if get_role(user_id) in ["admin", "master"]: continue 
+        
         try:
             await bot.send_message(chat_id=user_id, text=f"📢 {command.args}")
             success_count += 1
             await asyncio.sleep(0.05)
-        except TelegramAPIError:
+        except Exception:
             pass
-    await message.answer(f"✅ Broadcast sent to {success_count} users!")
+    await message.answer(f"✅ Broadcast sent to {success_count} normal users!")
 
 # --- CALLBACK (BUTTON) HANDLERS ---
 @router.callback_query(F.data == "register")
@@ -334,12 +361,22 @@ async def cb_register(callback: CallbackQuery):
         await callback.answer("✅ You are already registered! Just wait for the results.", show_alert=True)
         return
         
+    # SECURITY FIX: Ensure they are in the all_users list even if they never typed /start
+    if user_id not in data["all_users"]:
+        data["all_users"].append(user_id)
+
     data["giveaway"]["participants"].append(user_id)
     data["giveaway"]["participant_usernames"][str(user_id)] = username 
     save_data()
     
-    await callback.answer("✅ Registered successfully!")
-    await bot.send_message(chat_id=user_id, text="🎉 *SUCCESS!* You are registered for the drop!", parse_mode=ParseMode.MARKDOWN)
+    try:
+        await bot.send_message(chat_id=user_id, text="🎉 *SUCCESS!* You are registered for the drop!", parse_mode=ParseMode.MARKDOWN)
+        await callback.answer("✅ Registered successfully!")
+    except TelegramAPIError:
+        # SECURITY FIX: Catch users who clicked from a forwarded message but blocked the bot
+        data["giveaway"]["participants"].remove(user_id)
+        del data["giveaway"]["participant_usernames"][str(user_id)]
+        await callback.answer("⚠️ ERROR: You must send /start to the bot directly before registering!", show_alert=True)
 
 @router.callback_query(F.data == "check_luck")
 async def cb_check_luck(callback: CallbackQuery):
@@ -348,18 +385,22 @@ async def cb_check_luck(callback: CallbackQuery):
     
     if str_user_id in data["giveaway"]["winners"]:
         winning_code = data["giveaway"]["winners"][str_user_id]
-        await callback.answer(f"🎉 YOU WON! 🎉\n\nYour code is:\n{winning_code}", show_alert=True)
-        await bot.send_message(
-            chat_id=user_id, 
-            text=f"🏆 *CONGRATULATIONS!* 🏆\n\nYour secret code is: `{winning_code}`", 
-            parse_mode=ParseMode.MARKDOWN
-        )
+        
+        try:
+            await bot.send_message(
+                chat_id=user_id, 
+                text=f"🏆 *CONGRATULATIONS!* 🏆\n\nYour secret code is: `{winning_code}`", 
+                parse_mode=ParseMode.MARKDOWN
+            )
+            await callback.answer(f"🎉 YOU WON! 🎉\n\nYour code is:\n{winning_code}", show_alert=True)
+        except TelegramAPIError:
+            await callback.answer(f"🎉 YOU WON! 🎉\nYour code is:\n{winning_code}\n\n(Note: Unblock bot to get DM)", show_alert=True)
     else:
         await callback.answer("Better luck next time! 😔", show_alert=True)
 
-# --- NEW: RENDER KEEP-ALIVE WEB SERVER ---
+# --- KEEP-ALIVE WEB SERVER ---
 async def keep_alive(request):
-    return web.Response(text="Bot is perfectly alive and running on Render's Free Tier!")
+    return web.Response(text="Bot is securely alive and running on Render!")
 
 async def main():
     if not BOT_TOKEN:
@@ -368,7 +409,6 @@ async def main():
     
     dp.include_router(router)
     
-    # Start the fake web server for Render
     app = web.Application()
     app.router.add_get('/', keep_alive)
     runner = web.AppRunner(app)
