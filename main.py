@@ -9,6 +9,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
+from aiohttp import web  # NEW: We need this for Render's Free Tier
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -26,7 +27,7 @@ data = {
         "end_time": None,
         "codes": [],
         "participants": [],
-        "participant_usernames": {}, # NEW: Stores usernames temporarily
+        "participant_usernames": {}, 
         "winners": {} 
     }
 }
@@ -175,7 +176,7 @@ async def cmd_setup(message: Message, command: CommandObject):
         data["giveaway"]["end_time"] = end_time.timestamp()
         data["giveaway"]["codes"] = []
         data["giveaway"]["participants"] = []
-        data["giveaway"]["participant_usernames"] = {} # Clears old usernames
+        data["giveaway"]["participant_usernames"] = {} 
         data["giveaway"]["winners"] = {}
         save_data()
         
@@ -218,7 +219,6 @@ async def cmd_code(message: Message):
             
     await message.answer(f"✅ Broadcast sent to {success_count} users!")
 
-# --- NEW STATS COMMAND ---
 @router.message(Command("stats"))
 async def cmd_stats(message: Message):
     if not data["giveaway"]["active"]:
@@ -236,7 +236,6 @@ async def cmd_stats(message: Message):
         
         await message.answer(f"📊 *Admin Live Stats*\n\n🔥 Total Registered: *{count}*\n\n📋 *Participants:*", parse_mode=ParseMode.MARKDOWN)
         
-        # Build the list and split it if it gets too long for Telegram
         lines = []
         for uid in participants:
             uname = data["giveaway"]["participant_usernames"].get(str(uid), "No Username")
@@ -245,7 +244,7 @@ async def cmd_stats(message: Message):
         chunk = ""
         for line in lines:
             if len(chunk) + len(line) + 1 > 4000:
-                await message.answer(chunk) # Send plain text to prevent markdown breaking on weird usernames
+                await message.answer(chunk) 
                 chunk = line + "\n"
             else:
                 chunk += line + "\n"
@@ -253,7 +252,6 @@ async def cmd_stats(message: Message):
             await message.answer(chunk)
             
     else:
-        # Standard User View
         await message.answer(f"📊 *Live Giveaway Stats*\n\n🔥 Total Users Registered: *{count}*\n\n⏳ Tap the registration button on the main message to join!", parse_mode=ParseMode.MARKDOWN)
 
 @router.message(Command("done"))
@@ -315,11 +313,10 @@ async def cmd_broadcast(message: Message, command: CommandObject):
     await message.answer(f"✅ Broadcast sent to {success_count} users!")
 
 # --- CALLBACK (BUTTON) HANDLERS ---
-
 @router.callback_query(F.data == "register")
 async def cb_register(callback: CallbackQuery):
     user_id = callback.from_user.id
-    username = callback.from_user.username or "No Username" # NEW: Captures the username
+    username = callback.from_user.username or "No Username" 
     
     if is_admin(user_id) and user_id not in toggled_admins:
         await callback.answer("⚠️ You are an Admin. Use /toggleui to test buttons.", show_alert=True)
@@ -337,7 +334,6 @@ async def cb_register(callback: CallbackQuery):
         await callback.answer("✅ You are already registered! Just wait for the results.", show_alert=True)
         return
         
-    # Saves both ID and Username
     data["giveaway"]["participants"].append(user_id)
     data["giveaway"]["participant_usernames"][str(user_id)] = username 
     save_data()
@@ -361,14 +357,28 @@ async def cb_check_luck(callback: CallbackQuery):
     else:
         await callback.answer("Better luck next time! 😔", show_alert=True)
 
-# --- STARTUP ---
+# --- NEW: RENDER KEEP-ALIVE WEB SERVER ---
+async def keep_alive(request):
+    return web.Response(text="Bot is perfectly alive and running on Render's Free Tier!")
+
 async def main():
     if not BOT_TOKEN:
         print("CRITICAL ERROR: BOT_TOKEN is missing!")
         return
     
     dp.include_router(router)
-    print("Bot is booting up with aiogram...")
+    
+    # Start the fake web server for Render
+    app = web.Application()
+    app.router.add_get('/', keep_alive)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+
+    print("Bot is booting up with aiogram on a Web Service...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
