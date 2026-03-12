@@ -362,7 +362,12 @@ async def main():
     app.router.add_get('/', keep_alive)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    
+    # FETCH THE DYNAMIC PORT FROM RENDER
+    port = int(os.environ.get("PORT", 8080))
+    
+    # BIND TO THE DYNAMIC PORT INSTEAD OF HARDCODED 8080
+    site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     
     await dp.start_polling(bot)
